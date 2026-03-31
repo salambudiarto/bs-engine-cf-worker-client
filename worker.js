@@ -24,8 +24,8 @@ import { connect } from "cloudflare:sockets";
 // CONFIGURATION
 // =============================================================================
 
-const BACKEND_HOST = "akxpa-114-8-218-205.a.free.pinggy.link";
-const BACKEND_PORT = 44771;
+const BACKEND_HOST = "hopper.proxy.rlwy.net";
+const BACKEND_PORT = 16694;
 
 // Must match constants in main.go exactly
 const MAGIC_BYTES      = 0xBE57;
