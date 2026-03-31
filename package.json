@@ -1,0 +1,14 @@
+{
+  "name": "bsengine-worker",
+  "version": "1.0.0",
+  "description": "Cloudflare Worker HTTP gateway for the BSEngine binary key-value store",
+  "private": true,
+  "scripts": {
+    "dev":    "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail":   "wrangler tail --format pretty"
+  },
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  }
+}

@@ -1,0 +1,28 @@
+# ============================================================
+# BSEngine Worker — Wrangler Configuration
+# ============================================================
+# Docs: https://developers.cloudflare.com/workers/wrangler/configuration/
+
+name              = "bsengine-worker"
+main              = "src/index.js"
+compatibility_date = "2024-09-23"
+
+# nodejs_compat enables `cloudflare:sockets` — required for raw TCP connections.
+# Without this flag the Worker cannot connect to BSEngine over TCP.
+# Ref: https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/
+compatibility_flags = ["nodejs_compat"]
+
+# ── Development server ──────────────────────────────────────────────────────
+[dev]
+port = 8787
+# local_protocol = "http"
+
+# ── Optional: bind secrets via wrangler CLI ─────────────────────────────────
+# If you prefer not to hardcode the host/port in config.js, you can instead
+# bind them as plain-text vars here and read them from the `env` parameter
+# in the fetch() handler. The hardcoded approach in config.js is simpler and
+# sufficient when the Worker is deployed to a fixed region.
+#
+# [vars]
+# BSENGINE_HOST = "127.0.0.1"
+# BSENGINE_PORT = "7070"
