@@ -267,6 +267,28 @@ async function handleGet(key) {
 }
 
 /**
+ * GET /counter/:key
+ * Reads a key stored by /incr and decodes it as int64 little-endian.
+ * Use this instead of /get/:key for any key written via POST /incr.
+ */
+async function handleCounter(key) {
+  if (!validateKey(key)) return keyError();
+
+  const { status, data } = await sendBSEngineRequest(OP_VIEW, key, new Uint8Array(0));
+  if (status === STATUS_NOT_FOUND) return jsonResponse({ error: "key not found" }, 404);
+  if (status === STATUS_ERROR)     return jsonResponse({ error: "engine error" }, 500);
+
+  if (data.length !== 8) {
+    return jsonResponse({
+      error: `expected 8-byte int64, got ${data.length} bytes — key was not written by /incr`,
+    }, 422);
+  }
+
+  const value = Number(new DataView(data.buffer, data.byteOffset).getBigInt64(0, true));
+  return jsonResponse({ key, value });
+}
+
+/**
  * POST /set/:key
  * Content-Type determines how the body is stored:
  *   text/plain (default) -- raw UTF-8 string
@@ -432,6 +454,7 @@ export default {
       if (route === "stats"  && method === "GET")    return await handleStats();
       if (route === "evict"  && method === "POST")   return await handleEvict();
       if (route === "get"    && method === "GET")    return await handleGet(key);
+      if (route === "counter" && method === "GET") return await handleCounter(key);
       if (route === "set"    && method === "POST")   return await handleSet(key, request);
       if (route === "delete" && method === "DELETE") return await handleDelete(key);
       if (route === "incr"   && method === "POST")   return await handleIncr(key, request);
@@ -446,6 +469,7 @@ export default {
             "GET    /stats":         "engine metrics (keys, ops, pages, cache, idle)",
             "POST   /evict":         "trigger manual cache eviction + GC",
             "GET    /get/:key":      "read value by key",
+            "GET    /counter/:key":  "read int64 counter set by /incr",
             "POST   /set/:key":      "write value (body: text/json/binary)",
             "DELETE /delete/:key":   "delete key",
             "POST   /incr/:key":     'atomic increment (body: {"delta": N}, default 1)',
