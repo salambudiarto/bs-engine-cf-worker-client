@@ -17,10 +17,14 @@
  *   POST   /evict                   → OpEvict  (0x07) — manual cache eviction trigger
  */
 
+// ─── REQUIRED: explicit import for Cloudflare TCP Sockets API ────────────────
+// `connect` is NOT a global — must be imported from "cloudflare:sockets"
+import { connect } from "cloudflare:sockets";
+
 // ─── Configuration ───────────────────────────────────────────────────────────
 
-const BACKEND_HOST = "zgyie-114-8-218-205.a.free.pinggy.link";
-const BACKEND_PORT = 32779;
+const BACKEND_HOST = "akxpa-114-8-218-205.a.free.pinggy.link";
+const BACKEND_PORT = 44771;
 
 // BSEngine binary protocol constants
 const MAGIC_BYTES  = 0xBE57;   // uint16 LE — must match MagicBytes in main.go
