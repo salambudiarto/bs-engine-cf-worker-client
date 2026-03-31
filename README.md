@@ -222,6 +222,43 @@ Read the value stored at `:key`.
 { "error": "key not found" }
 ```
 
+> **Note:** Keys written via `POST /incr/:key` are stored as raw 8-byte little-endian int64. Reading them with `/get/:key` will decode the bytes as UTF-8, producing garbage output. Use `GET /counter/:key` instead for counter values.
+
+---
+
+### `GET /counter/:key`
+
+Read an int64 counter value stored at `:key` (typically created via `POST /incr/:key`).
+
+**Path Parameters**
+
+| Parameter | Type   | Constraints        | Description  |
+|-----------|--------|--------------------|--------------|
+| `key`     | string | 1–64 chars, URL-encoded | Counter key |
+
+**Response `200`**
+```json
+{
+  "key": "page:views",
+  "value": 42
+}
+```
+
+**Response `404`**
+```json
+{ "error": "key not found" }
+```
+
+**Response `422`**
+```json
+{
+  "error": "not a counter",
+  "detail": "value is N bytes (expected exactly 8)"
+}
+```
+
+> **Why this endpoint exists:** Counter keys created via `POST /incr/:key` are stored as 8-byte little-endian int64 (matching `main.go` encoding). Using `GET /get/:key` on these keys returns garbage UTF-8 text like `"\u0015\u0000..."` instead of the numeric value. This dedicated endpoint decodes the raw bytes correctly as int64.
+
 ---
 
 ### `POST /set/:key`
@@ -236,37 +273,34 @@ Write (upsert) a value at `:key`. Creates the key if absent; overwrites if prese
 
 **Request Body**
 
-| Content-Type                | Body interpretation              |
-|-----------------------------|----------------------------------|
-| `text/plain` *(default)*    | Raw UTF-8 string stored as-is    |
-| `application/json`          | JSON string stored as-is (raw)   |
-| `application/octet-stream`  | Binary blob stored verbatim      |
+| Content-Type                  | Encoding | Use case               |
+|-------------------------------|----------|------------------------|
+| `text/plain` (default)        | UTF-8    | Plain text or strings  |
+| `application/json`            | UTF-8    | JSON (stored verbatim) |
+| `application/octet-stream`    | Binary   | Images, files, blobs   |
 
 **Response `200`**
 ```json
-{
-  "ok": true,
-  "key": "user:1001"
-}
+{ "ok": true, "key": "user:1001" }
 ```
 
-**Response `413`** — value exceeds 10 MB:
-```json
-{ "error": "value exceeds max size (10485760 bytes)" }
-```
+**Response `413`** — value exceeds 10 MB
 
 ---
 
 ### `DELETE /delete/:key`
 
-Permanently delete a key from the store.
+Delete the key-value pair at `:key`.
+
+**Path Parameters**
+
+| Parameter | Type   | Constraints        | Description  |
+|-----------|--------|--------------------|--------------|
+| `key`     | string | 1–64 chars, URL-encoded | Storage key |
 
 **Response `200`**
 ```json
-{
-  "ok": true,
-  "key": "user:1001"
-}
+{ "ok": true, "key": "user:1001" }
 ```
 
 **Response `404`**
@@ -278,32 +312,46 @@ Permanently delete a key from the store.
 
 ### `POST /incr/:key`
 
-Atomically increment (or decrement) a numeric counter stored at `:key`. The engine manages the counter as a native `int64`. If the key does not exist, it is initialised to `0` before the delta is applied.
+Atomically increment the counter at `:key` by a signed delta. If the key does not exist, it is initialized to 0 before incrementing.
 
-**Request Body** *(optional JSON)*
+**Path Parameters**
+
+| Parameter | Type   | Constraints        | Description  |
+|-----------|--------|--------------------|--------------|
+| `key`     | string | 1–64 chars, URL-encoded | Counter key |
+
+**Request Body (optional)**
+
 ```json
-{ "delta": 5 }
+{ "delta": -5 }
 ```
 
-| Field   | Type    | Default | Description                            |
-|---------|---------|---------|----------------------------------------|
-| `delta` | integer | `1`     | Amount to add (negative values subtract) |
+If `delta` is omitted, defaults to `1`.
 
 **Response `200`**
 ```json
 {
   "ok": true,
-  "key": "counter:pageviews",
-  "new_value": 1042,
+  "key": "page:views",
+  "new_value": 43,
   "delta": 1
 }
 ```
+
+**Response `500`** — key holds a non-numeric value (delete it first):
+```json
+{
+  "error": "incr failed -- key may hold a non-numeric value; DELETE it first"
+}
+```
+
+> **Important:** Counters are stored as 8-byte little-endian int64. Use `GET /counter/:key` to read them correctly, not `GET /get/:key`.
 
 ---
 
 ### `GET /stats`
 
-Return live engine metrics. Useful for health dashboards and alerting.
+Retrieve engine-level statistics.
 
 **Response `200`**
 ```json
@@ -316,29 +364,29 @@ Return live engine metrics. Useful for health dashboards and alerting.
 }
 ```
 
-| Field          | Type    | Description                                      |
-|----------------|---------|--------------------------------------------------|
-| `keys`         | integer | Total distinct keys in the store                 |
-| `total_ops`    | integer | Cumulative operation count since start           |
-| `total_pages`  | integer | Number of 4 KiB pages allocated on disk          |
-| `cached_pages` | integer | Pages currently resident in the LRU buffer pool  |
-| `idle_secs`    | integer | Seconds since the last engine operation          |
+| Field          | Type   | Description                              |
+|----------------|--------|------------------------------------------|
+| `keys`         | uint64 | Total number of keys in the store        |
+| `total_ops`    | uint64 | Cumulative operation count               |
+| `total_pages`  | uint64 | Total pages allocated (4 KiB each)       |
+| `cached_pages` | uint32 | Pages currently held in LRU pool         |
+| `idle_secs`    | uint64 | Seconds since last operation (0 = active)|
 
 ---
 
 ### `POST /evict`
 
-Trigger a manual cache eviction cycle on the backend. The engine's LRU pool is shrunk, the index is pruned, and `runtime.GC()` + `debug.FreeOSMemory()` are called. The operation runs **asynchronously** inside the Go process; the Worker responds immediately.
-
-Useful in orchestration scripts, post-batch cleanup, or memory-constrained environments.
+Manually trigger cache eviction and garbage collection on the backend.
 
 **Response `200`**
 ```json
 {
   "ok": true,
-  "message": "eviction triggered in background"
+  "message": "cache eviction triggered in background"
 }
 ```
+
+**Response `500`** — eviction trigger failed
 
 ---
 
@@ -346,196 +394,235 @@ Useful in orchestration scripts, post-batch cleanup, or memory-constrained envir
 
 ### Prerequisites
 
-- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/) `>= 3.x`
-- Cloudflare account with Workers enabled
-- BSEngine running locally and exposed via [Pinggy](https://pinggy.io/) TCP tunnel
+- **Cloudflare account** (free tier works)
+- **Node.js** 18+ (for Wrangler CLI)
+- **BSEngine** running locally or remotely
+- **Pinggy tunnel** forwarding TCP to BSEngine
 
-### 1 — Clone and install
+### 1. Install Wrangler
 
 ```bash
-git clone https://github.com/<your-org>/bsengine-worker.git
-cd bsengine-worker
-npm install
+npm install -g wrangler
+wrangler login
 ```
 
-### 2 — Configure backend address
+### 2. Clone & configure
 
-Edit `worker.js` and update the two constants at the top:
+```bash
+git clone https://github.com/yourusername/bsengine-gateway.git
+cd bsengine-gateway
+```
+
+Edit `worker.js` — update these constants:
 
 ```js
-const BACKEND_HOST = "zgyie-114-8-218-205.a.free.pinggy.link"; // your Pinggy hostname
-const BACKEND_PORT = 32779;                                      // your Pinggy port
+const BACKEND_HOST = "your-tunnel.a.free.pinggy.link";
+const BACKEND_PORT = 32779;
 ```
 
-> **Tip:** Use [Wrangler Secrets](https://developers.cloudflare.com/workers/configuration/secrets/) or `[vars]` in `wrangler.toml` for production deployments instead of hardcoding.
-
-### 3 — `wrangler.toml`
-
-```toml
-name            = "bsengine-gateway"
-main            = "worker.js"
-compatibility_date = "2024-09-23"
-
-# Required for cloudflare:sockets TCP API
-compatibility_flags = ["nodejs_compat"]
-```
-
-### 4 — Local development
-
-```bash
-npx wrangler dev
-```
-
-The Worker starts at `http://localhost:8787`. BSEngine must be reachable from your machine.
-
-### 5 — Deploy to Cloudflare
+### 3. Deploy
 
 ```bash
 npx wrangler deploy
+```
+
+You'll receive a `*.workers.dev` URL. Test it:
+
+```bash
+BASE="https://your-worker.workers.dev"
+curl "$BASE/ping"
 ```
 
 ---
 
 ## ⚙️ Configuration
 
-| Constant          | Location    | Default                                    | Description                        |
-|-------------------|-------------|--------------------------------------------|------------------------------------|
-| `BACKEND_HOST`    | `worker.js` | `zgyie-114-8-218-205.a.free.pinggy.link`   | Pinggy hostname for TCP tunnel     |
-| `BACKEND_PORT`    | `worker.js` | `32779`                                    | Pinggy external TCP port           |
-| `MAGIC_BYTES`     | `worker.js` | `0xBE57`                                   | Must match `MagicBytes` in main.go |
-| `MAX_KEY_SIZE`    | `worker.js` | `64`                                       | Must match `MaxKeySize` in main.go |
-| `MAX_VALUE_SIZE`  | `worker.js` | `10485760` (10 MB)                         | Must match `MaxValueSize` in main.go |
+All configuration is currently hardcoded as constants in `worker.js`. Refactor to environment variables if needed:
 
-### Environment Variables (BSEngine backend)
+| Constant        | Default                                     | Purpose                     |
+|-----------------|---------------------------------------------|-----------------------------|
+| `BACKEND_HOST`  | `akxpa-114-8-218-205.a.free.pinggy.link`    | Pinggy tunnel hostname      |
+| `BACKEND_PORT`  | `44771`                                     | Pinggy tunnel TCP port      |
+| `MAGIC_BYTES`   | `0xBE57`                                    | Protocol identifier (LE)    |
+| `MAX_KEY_SIZE`  | `64`                                        | Max key length (bytes)      |
+| `MAX_VALUE_SIZE`| `10485760` (10 MB)                          | Max value size (bytes)      |
+| `TCP_TIMEOUT_MS`| `10000` (10 s)                              | Timeout for TCP round-trip  |
 
-These are consumed by `main.go`, not the Worker:
+### Moving to `env` bindings
 
-| Variable               | Default       | Description                       |
-|------------------------|---------------|-----------------------------------|
-| `BSENGINE_ADDR`        | `:7070`       | TCP listen address                |
-| `BSENGINE_DATA_PATH`   | `data.bin`    | Storage file path                 |
-| `BSENGINE_WAL_PATH`    | `wal.bin`     | WAL file path                     |
-| `BSENGINE_MEM_LIMIT_MB`| *(unset)*     | Soft RSS cap via `GOMEMLIMIT`     |
-| `BSENGINE_GOGC`        | `50`          | GC aggressiveness (lower = leaner)|
+To avoid redeployment on tunnel URL changes:
+
+1. Add to `wrangler.toml`:
+   ```toml
+   [vars]
+   BACKEND_HOST = "your-tunnel.a.free.pinggy.link"
+   BACKEND_PORT = "32779"
+   ```
+2. Replace constants in `worker.js`:
+   ```js
+   const BACKEND_HOST = env.BACKEND_HOST;
+   const BACKEND_PORT = parseInt(env.BACKEND_PORT, 10);
+   ```
 
 ---
 
-## 💡 Usage Examples
+## 💻 Usage Examples
 
-### cURL
+**Base URL:** `https://tcp-dt-engine.app140226c.workers.dev`
+
+### Write a string
 
 ```bash
-BASE="https://tcp-dt-engine.app140226c.workers.dev"
-
-# Ping
-curl "$BASE/ping"
-
-# Set a string value
 curl -X POST "$BASE/set/user:1001" \
   -H "Content-Type: text/plain" \
   -d "Alice"
+```
 
-# Set a JSON document
+### Read a string
+
+```bash
+curl "$BASE/get/user:1001"
+# {"key":"user:1001","value":"Alice"}
+```
+
+### Write JSON
+
+```bash
 curl -X POST "$BASE/set/config:app" \
   -H "Content-Type: application/json" \
-  -d '{"theme":"dark","lang":"id"}'
+  -d '{"theme":"dark","lang":"en"}'
+```
 
-# Get a value
-curl "$BASE/get/user:1001"
+### Read JSON
 
-# Increment a counter (delta defaults to 1)
-curl -X POST "$BASE/incr/counter:pageviews"
+```bash
+curl "$BASE/get/config:app" | jq .value
+# {"theme":"dark","lang":"en"}
+```
 
-# Increment by a custom delta
-curl -X POST "$BASE/incr/counter:pageviews" \
+### Increment a counter
+
+```bash
+curl -X POST "$BASE/incr/page:views"
+# {"ok":true,"key":"page:views","new_value":1,"delta":1}
+
+curl -X POST "$BASE/incr/page:views" \
   -H "Content-Type: application/json" \
-  -d '{"delta": 10}'
+  -d '{"delta":10}'
+# {"ok":true,"key":"page:views","new_value":11,"delta":10}
+```
 
-# Decrement (negative delta)
-curl -X POST "$BASE/incr/counter:stock" \
+### Read a counter (correct way)
+
+```bash
+curl "$BASE/counter/page:views"
+# {"key":"page:views","value":11}
+```
+
+### Read a counter (wrong way — produces garbage)
+
+```bash
+curl "$BASE/get/page:views"
+# {"key":"page:views","value":"\u000b\u0000\u0000\u0000\u0000\u0000\u0000\u0000"}
+```
+
+### Decrement a counter
+
+```bash
+curl -X POST "$BASE/incr/page:views" \
   -H "Content-Type: application/json" \
-  -d '{"delta": -1}'
+  -d '{"delta":-3}'
+# {"ok":true,"key":"page:views","new_value":8,"delta":-3}
+```
 
-# Delete a key
+### Delete a key
+
+```bash
 curl -X DELETE "$BASE/delete/user:1001"
+# {"ok":true,"key":"user:1001"}
+```
 
-# Engine metrics
-curl "$BASE/stats"
+### Upload binary data
 
-# Manual cache eviction
+```bash
+curl -X POST "$BASE/set/avatar:1001" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary @avatar.png
+```
+
+### Read binary data
+
+```bash
+curl "$BASE/get/avatar:1001" | jq -r .value | base64 -d > avatar_downloaded.png
+```
+
+### Check backend stats
+
+```bash
+curl "$BASE/stats" | jq .
+```
+
+### Trigger cache eviction
+
+```bash
 curl -X POST "$BASE/evict"
-```
-
-### JavaScript (Fetch API)
-
-```js
-const API = "https://tcp-dt-engine.app140226c.workers.dev";
-
-// Write
-await fetch(`${API}/set/session:abc`, {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ userId: 42, role: "admin" }),
-});
-
-// Read
-const res = await fetch(`${API}/get/session:abc`);
-const { key, value } = await res.json();
-console.log(value); // { userId: 42, role: "admin" }
-
-// Atomic counter
-const { new_value } = await (
-  await fetch(`${API}/incr/visits`, { method: "POST" })
-).json();
-console.log("Total visits:", new_value);
-```
-
-### Python (httpx)
-
-```python
-import httpx, json
-
-BASE = "https://tcp-dt-engine.app140226c.workers.dev"
-
-with httpx.Client() as c:
-    # Store binary blob
-    c.post(f"{BASE}/set/file:logo",
-           content=open("logo.png", "rb").read(),
-           headers={"Content-Type": "application/octet-stream"})
-
-    # Read back
-    r = c.get(f"{BASE}/get/file:logo").json()
-    # r["value"] is base64-encoded for binary data
-    import base64
-    data = base64.b64decode(r["value"])
-
-    # Stats
-    stats = c.get(f"{BASE}/stats").json()
-    print(f"Keys: {stats['keys']}  Ops: {stats['total_ops']}")
 ```
 
 ---
 
 ## ⚠️ Error Handling
 
-The Worker returns structured JSON errors with appropriate HTTP status codes.
+All errors return JSON with an `error` field and optional `detail` or `backend` context.
 
-| HTTP | `error` field value      | Root cause                                        |
-|------|--------------------------|---------------------------------------------------|
-| `400`| `key must be 1–64 chars` | Key missing, empty, or exceeds 64-byte limit      |
-| `404`| `key not found`          | BSEngine returned `STATUS_NOT_FOUND` (0x01)       |
-| `413`| `value exceeds max size` | Request body > 10 MB before TCP connection opens  |
-| `500`| `engine error`           | BSEngine returned `STATUS_ERROR` (0x02)           |
-| `500`| `internal error`         | Unexpected Worker exception                       |
-| `502`| `protocol error`         | Bad magic bytes in TCP response — version mismatch|
-| `503`| `backend unreachable`    | TCP connect failed — tunnel down or BSEngine not running |
+### Client errors (4xx)
 
-**Error response shape:**
+**`400 Bad Request`** — invalid key size
+```json
+{ "error": "key must be 1-64 bytes (UTF-8 encoded)" }
+```
+
+**`404 Not Found`** — key does not exist
+```json
+{ "error": "key not found" }
+```
+
+**`413 Payload Too Large`** — value > 10 MB
+```json
+{ "error": "value exceeds max size (10485760 bytes)" }
+```
+
+**`422 Unprocessable Entity`** — wrong endpoint for value type
+```json
+{
+  "error": "not a counter",
+  "detail": "value is 5 bytes (expected exactly 8)"
+}
+```
+
+### Server errors (5xx)
+
+**`500 Internal Server Error`** — BSEngine-level failure
+```json
+{
+  "error": "incr failed -- key may hold a non-numeric value; DELETE it first"
+}
+```
+
+**`502 Bad Gateway`** — protocol mismatch
+```json
+{
+  "error": "internal gateway error",
+  "detail": "Protocol error: bad magic 0x1234 (expected 0xbe57)",
+  "backend": "akxpa-114-8-218-205.a.free.pinggy.link:44771"
+}
+```
+
+**`503 Service Unavailable`** — TCP connection failed
 ```json
 {
   "error": "backend unreachable",
-  "detail": "Connection refused",
-  "backend": "zgyie-114-8-218-205.a.free.pinggy.link:32779"
+  "detail": "connect ECONNREFUSED",
+  "backend": "akxpa-114-8-218-205.a.free.pinggy.link:44771"
 }
 ```
 
@@ -543,7 +630,7 @@ The Worker returns structured JSON errors with appropriate HTTP status codes.
 
 ## 📊 Observability
 
-### Health check (automated)
+### Health check
 
 ```bash
 # Passes if latency < 500ms
@@ -682,6 +769,40 @@ Magic byte mismatch in the TCP response. Possible causes:
 ```bash
 curl -X DELETE "$BASE/delete/my:counter"
 curl -X POST "$BASE/incr/my:counter"   # starts at 1
+```
+
+---
+
+### `422 not a counter`
+
+You're trying to read a non-counter key with `GET /counter/:key`. This endpoint only works for keys created via `POST /incr/:key`. For regular string/JSON/binary values, use `GET /get/:key` instead.
+
+```bash
+# Wrong
+curl "$BASE/counter/user:name"
+# {"error":"not a counter","detail":"value is 5 bytes (expected exactly 8)"}
+
+# Correct
+curl "$BASE/get/user:name"
+# {"key":"user:name","value":"Alice"}
+```
+
+---
+
+### Counter reads return garbage with `/get/:key`
+
+Keys written via `POST /incr/:key` are stored as raw 8-byte little-endian int64 (matching `main.go` encoding). Reading them via `GET /get/:key` decodes the bytes as UTF-8 text, producing output like `"\u0015\u0000..."`. 
+
+**Solution:** Use the dedicated `GET /counter/:key` endpoint instead:
+
+```bash
+# Wrong — produces garbage
+curl "$BASE/get/page:views"
+# {"key":"page:views","value":"\u0015\u0000\u0000\u0000\u0000\u0000\u0000\u0000"}
+
+# Correct — decodes as int64
+curl "$BASE/counter/page:views"
+# {"key":"page:views","value":21}
 ```
 
 ---
